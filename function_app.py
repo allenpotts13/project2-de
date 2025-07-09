@@ -1,12 +1,13 @@
-import azure.functions as func
-import os
-from azure.storage.blob import BlobServiceClient
-import time
-import polars
 import io
-import psycopg2
+import os
+import time
 from io import StringIO
+
+import azure.functions as func
+import polars
+import psycopg2
 import requests
+from azure.storage.blob import BlobServiceClient
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 API_URL = f"{os.getenv('API_URL')}"
@@ -373,14 +374,14 @@ def upload_csv_to_azure_blob(filename, data):
         blob_client = blob_service_client.get_blob_client(
             container=CONTAINER_NAME, blob=filename
         )
-        
+
         # Handle encoding more robustly
         if isinstance(data, str):
             # Use errors='replace' to handle problematic characters
             blob_data = data.encode("utf-8", errors="replace")
         else:
             blob_data = data
-            
+
         blob_client.upload_blob(blob_data, overwrite=True)
         print(f"Successfully uploaded {filename} to Azure Blob Storage")
         return None
@@ -438,7 +439,10 @@ def NPPES_Data_Cleaning(req: func.HttpRequest) -> func.HttpResponse:
             "USPS_ZIP_PREF_STATE": polars.Utf8,
         }
         lazy_df_2 = extract_csv_data_from_blob(
-            csv_target_file_1, zip_county_relevant_columns, zip_county_column_mapping, zip_county_schema_overrides
+            csv_target_file_1,
+            zip_county_relevant_columns,
+            zip_county_column_mapping,
+            zip_county_schema_overrides,
         )
         if lazy_df_2 is not None:
             load_chunked_blob_data_to_postgres(
@@ -517,8 +521,10 @@ def NPPES_Data_Cleaning(req: func.HttpRequest) -> func.HttpResponse:
             print("Starting CSV export of clean data...")
             csv_filename = body.get("csv_filename", "nppes_clean_export.csv")
             csv_chunk_size = body.get("csv_chunk_size", 50000)
-            
-            export_success = export_clean_data_to_csv_chunked(csv_chunk_size, csv_filename)
+
+            export_success = export_clean_data_to_csv_chunked(
+                csv_chunk_size, csv_filename
+            )
             if export_success:
                 print(f"CSV export completed: {csv_filename}")
             else:
@@ -532,45 +538,60 @@ def NPPES_Data_Cleaning(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse(error_message, status_code=500)
 
 
-def export_clean_data_to_csv_chunked(chunk_size=50000, output_filename="nppes_clean_export.csv"):
+def export_clean_data_to_csv_chunked(
+    chunk_size=50000, output_filename="nppes_clean_export.csv"
+):
     """
     Export clean NPPES data to CSV - simple and efficient.
     """
     try:
         print(f"Starting CSV export to file: {output_filename}")
-        
+
         pg_conn = get_psycopg2_connection()
-        
+
         # Initialize CSV content
         csv_content = []
         processed_count = 0
-        
+
         # Add headers
         headers = [
-            'npi', 'entity_type', 'entity_name', 'provider_location_address_1', 
-            'provider_location_address_2', 'provider_city', 'provider_state', 
-            'provider_postal_code_clean', 'county_name', 'state_name',
-            'primary_taxonomy_code', 'taxonomy_grouping', 'taxonomy_classification', 
-            'taxonomy_specialization', 'data_quality_score'
+            "npi",
+            "entity_type",
+            "entity_name",
+            "provider_location_address_1",
+            "provider_location_address_2",
+            "provider_city",
+            "provider_state",
+            "provider_postal_code_clean",
+            "county_name",
+            "state_name",
+            "primary_taxonomy_code",
+            "taxonomy_grouping",
+            "taxonomy_classification",
+            "taxonomy_specialization",
+            "data_quality_score",
         ]
-        csv_content.append(','.join(f'"{col}"' for col in headers))
-        
+        csv_content.append(",".join(f'"{col}"' for col in headers))
+
         # Export data in chunks
         chunk_start = 0
         while True:
             print(f"Processing chunk starting at record {chunk_start:,}")
-            
+
             with pg_conn.cursor() as cursor:
                 # Get chunked data from the stored function
-                cursor.execute("SELECT npi, entity_type, entity_name, provider_location_address_1, provider_location_address_2, provider_city, provider_state, provider_postal_code_clean, county_name, state_name, primary_taxonomy_code, taxonomy_grouping, taxonomy_classification, taxonomy_specialization, data_quality_score FROM get_export_chunk(%s, %s)", (chunk_size, chunk_start))
+                cursor.execute(
+                    "SELECT npi, entity_type, entity_name, provider_location_address_1, provider_location_address_2, provider_city, provider_state, provider_postal_code_clean, county_name, state_name, primary_taxonomy_code, taxonomy_grouping, taxonomy_classification, taxonomy_specialization, data_quality_score FROM get_export_chunk(%s, %s)",
+                    (chunk_size, chunk_start),
+                )
                 rows = cursor.fetchall()
-                
+
                 if not rows:
-                    print(f"No more records found. Export complete.")
+                    print("No more records found. Export complete.")
                     break
-                
+
                 print(f"Retrieved {len(rows)} rows in this chunk")
-                
+
                 # Convert rows to CSV format
                 for row in rows:
                     escaped_row = []
@@ -579,43 +600,48 @@ def export_clean_data_to_csv_chunked(chunk_size=50000, output_filename="nppes_cl
                             escaped_row.append('""')
                         else:
                             # Special handling for ZIP codes to preserve leading zeros
-                            if headers[i] == 'provider_postal_code_clean' and value is not None:
+                            if (
+                                headers[i] == "provider_postal_code_clean"
+                                and value is not None
+                            ):
                                 str_value = str(value).zfill(5)
                             else:
                                 str_value = str(value)
-                            
+
                             # Escape quotes and wrap in quotes
                             str_value = str_value.replace('"', '""')
                             escaped_row.append(f'"{str_value}"')
-                    csv_content.append(','.join(escaped_row))
-                
+                    csv_content.append(",".join(escaped_row))
+
                 processed_count += len(rows)
                 chunk_start += chunk_size
                 print(f"Processed {processed_count:,} records so far")
-                
+
                 # If we got less than the chunk size, we're done
                 if len(rows) < chunk_size:
                     break
-        
+
         pg_conn.close()
-        
+
         # Join all CSV content
-        final_csv = '\n'.join(csv_content)
-        
+        final_csv = "\n".join(csv_content)
+
         # Upload to Azure Blob
         print(f"Uploading CSV file: {output_filename}")
         upload_success = upload_csv_to_azure_blob(output_filename, final_csv)
-        
+
         if upload_success is None:
-            print(f"Successfully exported {processed_count:,} records to {output_filename}")
+            print(
+                f"Successfully exported {processed_count:,} records to {output_filename}"
+            )
             return True
         else:
             print("Upload failed")
             return False
-            
+
     except Exception as e:
         print(f"Error during CSV export: {e}")
-        if 'pg_conn' in locals():
+        if "pg_conn" in locals():
             pg_conn.close()
         return False
 
@@ -626,26 +652,30 @@ def export_clean_csv(req: func.HttpRequest) -> func.HttpResponse:
     Azure Function endpoint to export clean NPPES data to CSV
     """
     start_time = time.time()
-    
+
     try:
         # Get optional parameters from request
         body = req.get_json() if req.get_body() else {}
-        chunk_size = body.get('chunk_size', 50000)
-        output_filename = body.get('output_filename', 'nppes_clean_export.csv')
-        
-        print(f"Starting CSV export with chunk_size={chunk_size}, filename={output_filename}")
-        
+        chunk_size = body.get("chunk_size", 50000)
+        output_filename = body.get("output_filename", "nppes_clean_export.csv")
+
+        print(
+            f"Starting CSV export with chunk_size={chunk_size}, filename={output_filename}"
+        )
+
         # Run the export
         success = export_clean_data_to_csv_chunked(chunk_size, output_filename)
-        
+
         elapsed = time.time() - start_time
-        
+
         if success:
             response_message = f"CSV export completed successfully in {elapsed:.2f} seconds. File: {output_filename}"
             return func.HttpResponse(response_message, status_code=200)
         else:
-            return func.HttpResponse("CSV export failed. Check logs for details.", status_code=500)
-            
+            return func.HttpResponse(
+                "CSV export failed. Check logs for details.", status_code=500
+            )
+
     except Exception as e:
         elapsed = time.time() - start_time
         error_message = f"CSV export error after {elapsed:.2f} seconds: {str(e)}"
