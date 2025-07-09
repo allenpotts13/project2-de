@@ -6,3 +6,11 @@ black
 pandas
 pandas-stubs
 polars
+azure-functions
+psycopg2-binary
+sqlalchemy
+openpyxl
+azure-storage-blob
+pyarrow
+requests
+pytest-mock
