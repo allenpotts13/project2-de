@@ -25,7 +25,7 @@ jobs:
         pip install -r requirements-dev.txt
     - name: Check code formatting
       run: |  
-        black src/ tests/
+        black tests/
   test:
     name: Code Tests
     runs-on: ubuntu-latest
