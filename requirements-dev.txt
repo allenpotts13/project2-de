@@ -1,0 +1,7 @@
+pytest
+flake8
+isort
+mypy
+black
+pandas
+pandas-stubs
